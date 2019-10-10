@@ -17,6 +17,8 @@
 Simply run this
 
 nextflow run main.nf --reads "*bam" --file_ext bam --fasta ~/TAiR10_ARABIDOPSIS/TAIR10_wholeGenome.fasta --outdir output_folder
+
+Make sure there is no hash tag in the file name. GATK 4 (GenomicsDBImport) isnt supporting this yet.
 */
 
 /*
@@ -105,9 +107,6 @@ if( !(workflow.runName ==~ /[a-z]+_[a-z]+/) ){
   custom_runName = workflow.runName
 }
 
-// Library prep presets
-params.illumina = true
-
 log.info "=================================================="
 log.info " nf-haplocaller : SNP calling Best Practice v${params.version}"
 log.info "=================================================="
@@ -131,6 +130,8 @@ summary['Working dir']    = workflow.workDir
 summary['Output dir']     = params.outdir
 summary['Script dir']     = workflow.projectDir
 summary['Config Profile'] = workflow.profile
+// summary['Container']      = process.container
+// summary['Conda environment'] = process.conda
 log.info summary.collect { k,v -> "${k.padRight(18)}: $v" }.join("\n")
 log.info "========================================="
 
@@ -173,14 +174,14 @@ if (params.file_ext == "fastq"){
 
   process extractFastq {
     tag "$name"
-    storeDir "${params.outdir}/rawreads"
+    storeDir "${workflow.workDir}/rawreads"
     label 'env_small'
 
     input:
     set val(name), file(reads) from read_files_processing
 
     output:
-    set val(name), file("${name}.fastq") into files_fastq
+    set val(name), file("${name}*fastq") into files_fastq
 
     script:
     if (params.singleEnd) {
@@ -202,7 +203,8 @@ if (params.file_ext == "fastq"){
       } else if (reads.getExtension() == "bam") {
         """
         picard SamToFastq \
-        I=$reads FASTQ=${name}.fastq INTER=true VALIDATION_STRINGENCY=LENIENT
+        I=$reads FASTQ=${name}_1.fastq SECOND_END_FASTQ=${name}_2.fastq \
+        VALIDATION_STRINGENCY=LENIENT
         """
       }
     }
@@ -294,7 +296,7 @@ process alignReads {
 
   script:
   """
-  bwa mem -t ${task.cpus} -p $genome $reads > ${name}.sam
+  bwa mem -t ${task.cpus} $genome $reads > ${name}.sam
   """
 }
 
@@ -366,7 +368,7 @@ process picardBam {
 * 7.1 get qualimap for results on alignedBam
 */
 
-process qc_bam {
+process qcBam {
     tag "$name"
     label 'env_small'
     publishDir "${params.outdir}/qc/bamstats_qualimap", mode: 'copy'
@@ -442,9 +444,9 @@ if (perform_bqsr == true){
     set file(vcf_db), file(vcf_db_idx) from known_sites_vcf.collect()
 
     output:
-    set val(name), file("${name}.sorted.mkdup.recal.bam"), file("${name}.sorted.mkdup.recal.bam.bai") into recall_bam
+    set val(name), file("${name}.sorted.mkdup.recall.bam"), file("${name}.sorted.mkdup.recall.bam.bai") into recall_bam
     file("${bam}.BQSR.pdf") into stats_bqsr
-    file ("${name}.recal_data.table") into ch_baserecal_results_for_multiqc
+    file ("${name}.recall_data.table") into ch_baserecal_results_for_multiqc
 
     script:
     """
@@ -452,30 +454,31 @@ if (perform_bqsr == true){
     --tmp-dir=${params.tmpdir} \
     -R $reffol/${refid}.fasta\
     -I $bam --known-sites $vcf_db\
-    -O ${name}.recal_data.table
+    -O ${name}.recall_data.table
 
     gatk ApplyBQSR\
     --tmp-dir=${params.tmpdir} \
     -R $reffol/${refid}.fasta\
-    -I $bam --bqsr-recal-file ${name}.recal_data.table\
-    -O ${name}.sorted.mkdup.recal.bam
+    -I $bam --bqsr-recal-file ${name}.recall_data.table\
+    -O ${name}.sorted.mkdup.recall.bam
 
     gatk BaseRecalibrator\
     --tmp-dir=${params.tmpdir} \
     -R $reffol/${refid}.fasta\
-    -I ${name}.sorted.mkdup.recal.bam --known-sites $vcf_db\
+    -I ${name}.sorted.mkdup.recall.bam --known-sites $vcf_db\
     -O ${name}.after_recal_data.table
 
     gatk AnalyzeCovariates\
     --tmp-dir=${params.tmpdir} \
-    -before ${name}.recal_data.table -after ${name}.after_recal_data.table\
+    -before ${name}.recall_data.table -after ${name}.after_recal_data.table\
     -plots ${name}.BQSR.pdf
 
-    samtools index ${name}.sorted.mkdup.recal.bam
+    samtools index ${name}.sorted.mkdup.recall.bam
     """
   }
 } else {
   modified_bam.set{ recall_bam }
+  ch_baserecal_results_for_multiqc = Channel.from([])
 }
 
 
@@ -484,7 +487,7 @@ if (perform_bqsr == true){
 */
 process doSNPcall {
   tag "$name"
-  publishDir "${params.outdir}/raw_variants/sample_gvcf", mode: 'copy'
+  publishDir "${params.outdir}/sampleGVCF", mode: 'copy'
   label 'env_large'
 
   input:
@@ -513,7 +516,7 @@ chromosomes_ch = Channel.from( chromosomes )
 
 process GenomicsDBImport {
   tag "gendbi_${chr}"
-  label 'env_large'
+  label 'env_gatk_medium'
   publishDir "$params.outdir/raw_variants/genodbi_gatk", mode: 'copy'
 
   input:
@@ -527,7 +530,7 @@ process GenomicsDBImport {
   script:
   def try_vcfs = in_vcf.collect { "-V $it" }.join(' ')
   """
-  gatk GenomicsDBImport --java-options "-Xmx${task.memory.toGiga()}G -Xms24g" \
+  gatk GenomicsDBImport --java-options "-Xmx${task.memory.toGiga()}G -Xms${task.memory.toGiga()}G" \
   --tmp-dir=${params.tmpdir} \
   ${try_vcfs} \
   -L ${chr}\
@@ -539,7 +542,7 @@ process GenomicsDBImport {
 /*
 * 10.2 GenotypeGVCF for all the files
 */
-process GenotypeGVCFs {
+process genotypeGVCFs {
   tag "gvcf_${chr}"
   label 'env_large'
   // publishDir "$params.outdir/combinedGVCF", mode: 'copy'
@@ -570,9 +573,9 @@ process GenotypeGVCFs {
 * 11 Join all the VCFs generated per chromosome
 */
 try_vcf = chromosomes.collect{it -> "--INPUT ${params.cohort}.${it}.vcf.gz"}.join(' ')
-process GatherVcfs {
+process gatherVcfs {
   tag "gatherVCF_${params.cohort}"
-  label 'env_medium'
+  label 'env_gatk_medium'
   publishDir "$params.outdir/raw_variants/combined_GVCF", mode: 'copy'
 
   input:
@@ -587,6 +590,7 @@ process GatherVcfs {
   GatherVcfs \
   ${try_vcf} \
   --OUTPUT ${params.cohort}.vcf.gz
+  tabix ${params.cohort}.vcf.gz
   """
 }
 
@@ -616,15 +620,15 @@ input_names = sample_names
 
 process selectSNPs {
   tag "$name"
-  publishDir "${params.outdir}/raw_variants/sample_filter_vcf", mode: 'copy'
-  label 'env_small'
+  publishDir "${params.outdir}/raw_variants/sample_biallelics", mode: 'copy'
+  label 'env_gatk_medium'
 
   input:
   val name from input_names
   set file(gvcf), file(gvcf_index) from gvcf_select_snp_ch.collect()
 
   output:
-  file "${name}.filter.vcf" into filter_vcf
+  set file("${name}.BIALLELIC.SNPs.vcf"), file("${name}.BIALLELIC.SNPs.vcf.idx") into filter_vcf
 
   script:
   """
@@ -632,9 +636,9 @@ process selectSNPs {
     --tmp-dir ${params.tmpdir}\
     -R $reffol/${refid}.fasta \
     -V $gvcf \
-    -selectType SNP -restrictAllelesTo BIALLELIC \
+    -select-type SNP --restrict-alleles-to BIALLELIC \
     -se "${name}" \
-    -O ${name}.filter.vcf
+    -O ${name}.BIALLELIC.SNPs.vcf
   """
 }
 
@@ -667,7 +671,8 @@ ch_config_for_multiqc = Channel
 //   """
 // }
 
-process multiqc {
+process multiQC {
+    label 'env_medium'
     tag "${params.outdir}/MultiQC/$ofilename"
     publishDir "${params.outdir}/MultiQC", mode: 'copy'
 
