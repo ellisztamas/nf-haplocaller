@@ -516,7 +516,7 @@ chromosomes_ch = Channel.from( chromosomes )
 
 process GenomicsDBImport {
   tag "gendbi_${chr}"
-  label 'env_gatk_medium'
+  label 'env_large'
   publishDir "$params.outdir/raw_variants/genodbi_gatk", mode: 'copy'
 
   input:
