@@ -324,7 +324,7 @@ process processBam {
   script:
   """
   samtools view -b -o ${name}.bam -S $sam
-  samtools sort -m ${task.memory.toBytes() / task.cpus} --threads ${task.cpus} -o ${name}.sorted.bam ${name}.bam
+  samtools sort -m 5G --threads ${task.cpus} -o ${name}.sorted.bam ${name}.bam
 
   samtools index ${name}.sorted.bam
   samtools flagstat ${name}.sorted.bam > ${name}_flagstat_report.txt
@@ -437,7 +437,7 @@ if (perform_bqsr == true){
       else if (filename.indexOf("bai") > 0) "recallBam/$filename"
       else "qc/baseRecallstats_bqsr/$filename"
     }
-    label 'env_medium'
+    label 'env_large'
 
     input:
     set val(name), file(bam), file(bam_index) from modified_bam
