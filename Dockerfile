@@ -1,4 +1,4 @@
-FROM broadinstitute/gatk:4.1.2.0
+FROM broadinstitute/gatk:4.1.4.1
 # FROM continuumio/anaconda3
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
