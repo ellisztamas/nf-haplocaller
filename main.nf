@@ -370,7 +370,7 @@ process picardBam {
 
 process qcBam {
     tag "$name"
-    label 'env_small'
+    label 'env_medium_mem'
     publishDir "${params.outdir}/qc/bamstats_qualimap", mode: 'copy'
 
     input:
@@ -385,7 +385,7 @@ process qcBam {
         -bam ${bam} \\
         -outdir ${name}_qualimap \\
         --collect-overlap-pairs \\
-        --java-mem-size=${task.memory.toGiga()}G \\
+        --java-mem-size=10G \\
         -nt ${task.cpus}
     """
 }
@@ -445,7 +445,7 @@ if (perform_bqsr == true){
 
     output:
     set val(name), file("${name}.sorted.mkdup.recall.bam"), file("${name}.sorted.mkdup.recall.bam.bai") into recall_bam
-    file("${bam}.BQSR.pdf") into stats_bqsr
+    file("${name}.BQSR.pdf") into stats_bqsr
     file ("${name}.recall_data.table") into ch_baserecal_results_for_multiqc
 
     script:
