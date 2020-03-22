@@ -155,7 +155,7 @@ if (build_index == true){
       """
       samtools faidx ${genome}
       bwa index $genome
-      picard  CreateSequenceDictionary -R $genome -O ${refid}.dict
+      picard  CreateSequenceDictionary R=$genome O=${refid}.dict
       """
   }
 } else {
