@@ -1,8 +1,8 @@
 /*
- to call SNPs in the known sites.
+ to call SNPs using bcftools either in known sites (cohort or not).
+ you can also filter snps in case of bsseq
 
-
-nextflow run snpsnf --input "*bam" --targets target_file --fasta ref_seq/TAIR10_wholeGenome.fasta  --outdir filter_vcfs
+nextflow run snpsnf --input "*bam" --bsseq --cohort f2_snps --known_sites target_file --fasta ref_seq/TAIR10_wholeGenome.fasta  --outdir filter_vcfs
 */
 
 params.project = "the1001genomes"
@@ -13,9 +13,9 @@ params.fasta = false
 params.known_sites = false  // if known sites (VCF file) is given,
 // Provide the --cohort, if you want to generate a combined vcf for all the samples.
 params.cohort = false // file name for output combined vcf
-params.call_variants = false // Only call variants instead of all sites, useful if given cohort and known_sites (to then remove non-polymorphic in the sites)
+params.call_variants = true // Only call variants instead of all sites, useful if given cohort and known_sites (to then remove non-polymorphic in the sites)
 // Can we filter SNPs for bisulfite
-params.bsseq = false
+params.bsseq = false 
 params.minimum_depth = 3
 
 // Options to filter VCF file
@@ -108,7 +108,7 @@ if (params.bsseq != false){
     // echo "CHROM,POS,REF,ALT,DP," > ${name}.bsseq.filtered.bed
     // bcftools query -l $vcf | tr '\n' ',' | sed 's/,$/\n/' >> ${name}.bsseq.filtered.bed
     """
-    bcftools query -f "%CHROM\t%POS\t%REF\t%ALT\t%DP[\t%GT]\n" $vcf | awk '\$3 !~ /C|G/ && length(\$3) == 1 && length(\$4) == 1 && \$4 !~ /T/ &&  \$5 > $params.minimum_depth {print \$1 "\t" \$2 "\t" \$6 }' > ${name}.bsseq.filtered.bed
+    bcftools query -f "%CHROM\t%POS\t%REF\t%ALT\t%DP[\t%GT]\n" $vcf | awk '\$3 !~ /C|G/ && length(\$3) == 1 && length(\$4) == 1 && \$4 !~ /T/ &&  \$5 > $params.minimum_depth {print \$0 }' > ${name}.bsseq.filtered.bed
     """
   }
 }
