@@ -14,18 +14,18 @@ params.known_sites_vcf = "/groups/nordborg/projects/the1001genomes/scratch/rahul
 params.known_sites_targets = "/groups/nordborg/projects/the1001genomes/scratch/rahul/101.VCF_1001G_1135/1135g_SNP_BIALLELIC.tsv.gz"  
 // targets file generated from bcftools
 
-// build_index = false
-// if ( params.fasta ){
-//   genome = file(params.fasta)
-//   reffol = genome.parent
-//   refid = genome.baseName
-//   if( !genome.exists() ) exit 1, "Reference fasta file not found: ${params.fasta}"
-//   bwa_indices = Channel
-//     .fromPath( "$reffol/${refid}.fasta.b*" )
-//     .ifEmpty { build_index = true }
-// } else {
-//   exit 1, "Provide reference fasta file. Ex., --fasta file_path"
-// }
+build_index = false
+if ( params.fasta ){
+  genome = file(params.fasta)
+  reffol = genome.parent
+  refid = genome.baseName
+  if( !genome.exists() ) exit 1, "Reference fasta file not found: ${params.fasta}"
+  bwa_indices = Channel
+    .fromPath( "$reffol/${refid}.fasta.b*" )
+    .ifEmpty { build_index = true }
+} else {
+  exit 1, "Provide reference fasta file. Ex., --fasta file_path"
+}
 
 
 //  SNP calling starts now
