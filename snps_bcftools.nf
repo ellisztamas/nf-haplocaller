@@ -1,8 +1,7 @@
 /*
  to call SNPs using bcftools either in known sites (cohort or not).
- you can also filter snps in case of bsseq
 
-nextflow run snpsnf --input "*bam" --variants_only --bsseq --cohort f2_snps --known_sites target_file --fasta ref_seq/TAIR10_wholeGenome.fasta  --outdir filter_vcfs
+nextflow run snpsnf --input "*bam" --variants_only --cohort f2_snps --known_sites target_file --fasta ref_seq/TAIR10_wholeGenome.fasta  --outdir filter_vcfs
 */
 
 params.project = "the1001genomes"
@@ -11,13 +10,12 @@ params.outdir = './snpcall'
 params.fasta = false
 // provide save_intermediate if you want to save vcf file without filtering
 params.save_intermediate = false
-// to perform snpcalling only on specific position, provide a VCF file below
+// to perform snpcalling only on specific position, provide a targets file
 params.known_sites = false  // if known sites (VCF file) is given,
 // Provide the --cohort, if you want to generate a combined vcf for all the samples.
 params.cohort = false // file name for output combined vcf
 params.variants_only = false // Only call variants instead of all sites, useful if given cohort and known_sites (to then remove non-polymorphic in the sites)
 // Can we filter SNPs for bisulfite
-params.bsseq = false 
 params.get_bed = false  // will output only bed file 
 
 // Below options important to consider while calling SNPs in different samples
@@ -25,9 +23,9 @@ params.min_depth = 2
 params.min_base_quality = 30
 params.min_map_quality = 10 // really important > 10 would be for uniquly mapped reads
 //http://seqanswers.com/forums/showthread.php?t=61908
-
 // Options to filter VCF file
 params.min_snp_qual = 30
+
 
 build_index = false
 if ( params.fasta ){
@@ -45,7 +43,10 @@ if ( params.fasta ){
 
 //  SNP calling starts now
 if (params.known_sites != false){
-  known_sites_vcf = file( params.known_sites )
+  known_sites_tsv = file( params.known_sites )
+  //     bcftools query -f'%CHROM\t%POS\t%REF,%ALT\n' $vcf |\
+  //     bgzip -c > ${out_name}.tsv.gz && \
+  //     tabix -s1 -b2 -e2 ${out_name}.tsv.gz
 }
 
 if (params.cohort != false) {
@@ -74,10 +75,18 @@ process getVcf {
   set val("${outname}"), file("${outname}.vcf.gz") into nofilter_vcf
 
   script:
-  known_sites_cmd = params.known_sites != false ? "-C alleles -m -T ${known_sites_vcf}" : ''
+  known_sites_mpile_cmd = params.known_sites != false ? "-T ${known_sites_tsv}" : ''
+  known_sites_call_cmd = params.known_sites != false ? "-C alleles -m -T ${known_sites_tsv}" : ''
   outname = params.cohort != false ? "${params.cohort}" : file(bam).baseName
+  // -q ${params.min_map_quality}\
   """
-  bcftools mpileup -q ${params.min_map_quality} -Q ${params.min_base_quality} --threads ${task.cpus} -f $reffol/${refid}.fasta $bam | bcftools call --threads ${task.cpus} $call_varonly $known_sites_cmd -O z -o ${outname}.vcf.gz
+  bcftools mpileup --threads ${task.cpus}\
+  $known_sites_mpile_cmd \
+  -Q ${params.min_base_quality}\
+  -f $reffol/${refid}.fasta $bam | \
+  bcftools call --threads ${task.cpus} \
+  $call_varonly $known_sites_call_cmd \
+  -O z -o ${outname}.vcf.gz
   """
 }
 
@@ -100,7 +109,7 @@ process filterVcf {
   """
 }
 
-if (params.get_bed != false && params.bsseq == false ){
+if (params.get_bed != false ){
   process getBed {
     tag "${name}"
     label 'env_medium'
@@ -110,7 +119,7 @@ if (params.get_bed != false && params.bsseq == false ){
     set val(name), file(vcf), file(vcf_idx) from output_vcf
 
     output:
-    set val(name), file("${name}.filtered.bed") into bsseq_vcf
+    set val(name), file("${name}.filtered.bed") into out_bed
 
     script:
     """
@@ -119,46 +128,4 @@ if (params.get_bed != false && params.bsseq == false ){
   }
 }
 
-if (params.bsseq != false){
-  process bsseqVcf {
-    tag "${name}"
-    label 'env_medium'
-    publishDir "${params.outdir}/bsseq", mode: "copy"
 
-    input:
-    set val(name), file(vcf), file(vcf_idx) from output_vcf
-
-    output:
-    set val(name), file("${name}.bsseq.filtered.bed") into bsseq_vcf
-
-    script:
-    // qual_filter = $params.minimum_qual > 0 ? "  "
-    // echo "CHROM,POS,REF,ALT,DP," > ${name}.bsseq.filtered.bed
-    // bcftools query -l $vcf | tr '\n' ',' | sed 's/,$/\n/' >> ${name}.bsseq.filtered.bed
-    """
-    bcftools query -f "%CHROM\t%POS\t%REF\t%ALT\t%DP[\t%GT]\n" $vcf | awk '\$3 !~ /C|G/ && length(\$3) == 1 && length(\$4) == 1 && \$4 !~ /T/ &&  \$5 >= $params.minimum_depth {print \$0 }' > ${name}.bsseq.filtered.bed
-    """
-  }
-}
-
-// process getSamples {
-//   tag "joinGVCF"
-//   label 'env_gatk_small'
-//
-//   input:
-//   file gvcf from combgVCF_name
-//   file gvcf_index from combgVCF_name_index
-//
-//   output:
-//   stdout sample_names
-//
-//   script:
-//   """
-//   tabix -H $gvcf | grep -m 1 "^#CHROM" | awk '{for(i=10;i<=NF;i++) print \$i}'
-//   """
-// }
-//
-// input_names = sample_names
-//     .splitCsv()
-//     .map {row -> "${row[0]}"}
-//
