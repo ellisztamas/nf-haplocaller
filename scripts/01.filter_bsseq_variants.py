@@ -30,6 +30,7 @@ log.info("done!")
 
 
 filter_c_t = (input_files['REF'] == 'C') & (input_files['ALT'] == 'T') 
+# filter_c_t = input_files['REF'] == 'C'    ### Error rate doesnt seem to increase much
 # all_filters = (input_files['REF'] == 'T') & (input_files['ALT'] == 'C') 
 # all_filters = (input_files['REF'] == 'T') & (input_files['ALT'] == 'C') 
 filter_g_a = (input_files['REF'] == 'G') & (input_files['ALT'] == 'A') 
