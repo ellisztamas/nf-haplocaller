@@ -8,10 +8,13 @@ params.project = "the1001genomes"
 params.input = false
 params.outdir = './snpcall'
 params.fasta = false
+params.snpcaller = "bcftools"
+params.min_base_quality = 30 // only used for snpcaller bcftools
+params.min_snp_qual = 30
 // to perform snpcalling only on specific position, provide a targets file
-params.known_sites_vcf = "/groups/nordborg/projects/the1001genomes/scratch/rahul/101.VCF_1001G_1135/1135g_SNP_BIALLELIC.vcf"
+// params.known_sites_vcf = "/groups/nordborg/projects/the1001genomes/scratch/rahul/101.VCF_1001G_1135/1135g_SNP_BIALLELIC.vcf"
 // known sites (VCF file) is given,
-params.known_sites_targets = "/groups/nordborg/projects/the1001genomes/scratch/rahul/101.VCF_1001G_1135/1135g_SNP_BIALLELIC.tsv.gz"  
+params.known_sites = "/groups/nordborg/projects/the1001genomes/scratch/rahul/101.VCF_1001G_1135/1135g_SNP_BIALLELIC.tsv.gz"  
 // targets file generated from bcftools
 
 build_index = false
@@ -32,61 +35,155 @@ if ( params.fasta ){
 input_bams = Channel
         .fromPath( "${params.input}" )
         .map{ it -> [ file(it).baseName, file(it), file("${it}.bai") ] }
-known_sites_vcf = file( params.known_sites_vcf  )
-known_sites_targets = file( params.known_sites_targets  )
 
 
-process ModifyBam {
-  tag "${name}"
-  label "env_medium"
-  storeDir "${params.outdir}/modified_bams"
 
-  input:
-  set val(name), file(bam), file(bam_index) from input_bams
+// process MethylExtract {
+//   tag "${name}"
+//   label "env_medium"
+//   publishDir "${params.outdir}/raw_variants", mode: "copy"
 
-  output:
-  set val(name), file("${name}.modified.bam") into modify_bam
+//   input:
+//   set val(name), file(bam) from modify_bam
 
-  script:
-  """
-  picard AddOrReplaceReadGroups I=$bam \
-  O=${name}.modified.bam \
-  RGID=$name RGLB=$name \
-  RGPL=illumina RGPU=none RGSM=$name
-  """
-}
+//   output:
+//   file("${name}.filtered.snpvcf.bed") into bsseq_vcfbed
 
+//   script:
+//   outname = bam.baseName 
+//   // flagW=99,147 flagC=83,163 // set for paired end
+//   """
+//   mkdir out_dir
+//   ln -s -r $bam out_dir/$bam
 
-process getBSVcf {
-  tag "${name}"
-  label "env_medium"
-  publishDir "${params.outdir}/raw_variants", mode: "copy"
+//   MethylExtract.pl seq=~/TAiR10_ARABIDOPSIS/TAIR10_wholeGenome.fasta \
+//   inDir=./ outDir=out_dir \
+//   flagW=99,147 flagC=83,163 \  
+//   varFraction=0.05 maxPval=0.01 \
+//   LastIgnor=3 minDepthSNV=2 \
 
-  input:
-  set val(name), file(bam) from modify_bam
-
-  output:
-  file("${name}.filtered.snpvcf.bed") into bsseq_vcfbed
-
-  script:
-  outname = bam.baseName 
-  """
-  samtools index $bam 
-  gatk --java-options '-Djava.io.tmpdir=${params.tmpdir}' HaplotypeCaller\
-  -R $reffol/${refid}.fasta\
-  -I $bam \
-  -O ${name}.vcf.gz \
-  --alleles ${known_sites_vcf} \
-  --force-call-filtered-alleles \
-  --output-mode EMIT_ALL_CONFIDENT_SITES
-
-  bcftools filter -T $known_sites_targets ${name}.vcf.gz | bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%AD][\t%GT]\n" |\
-  awk 'length(\$3) == 1 && length(\$4) == 1 {print \$0}'  > ${name}.snpvcf.bed
   
-  python $workflow.projectDir/scripts/01.filter_bsseq_variants.py \
-  -i ${name}.snpvcf.bed -o ${name}.filtered.snpvcf.bed
-  """
+//   bcftools mpileup --threads ${task.cpus}\
+//   $known_sites_mpile_cmd \
+//   -Q ${params.min_base_quality}\
+//   -f $reffol/${refid}.fasta $bam | \
+//   bcftools call --threads ${task.cpus} \
+//   $call_varonly $known_sites_call_cmd \
+//   -O z -o ${outname}.vcf.gz
+  
+//   bcftools filter -T $known_sites_targets ${name}.vcf.gz | bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%AD][\t%GT]\n" |\
+//   awk 'length(\$3) == 1 && length(\$4) == 1 {print \$0}'  > ${name}.snpvcf.bed
+    
+//   python $workflow.projectDir/scripts/01.filter_bsseq_variants.py \
+//   -i ${name}.snpvcf.bed -o ${name}.filtered.snpvcf.bed
+//   """
+// }
+
+
+/*
+Using BCFtools to call genotypes at known sites
+*/
+
+if (params.snpcaller == "bcftools"){
+
+  process BCFcall {
+    tag "${name}"
+    label "env_medium"
+    publishDir "${params.outdir}/variants_bcftools", mode: "copy"
+
+    input:
+    set val(name), file(bam), file(bam_index) from input_bams
+
+    output:
+    file("${name}.filtered.snpvcf.bed") into bsseq_vcfbed
+
+    script:
+    outname = bam.baseName 
+    // flagW=99,147 flagC=83,163 // set for paired end
+    known_sites_mpile_cmd = params.known_sites != false ? "-T ${params.known_sites}" : ''
+    known_sites_call_cmd = params.known_sites != false ? "-C alleles -m -T ${params.known_sites}" : ''
+    """
+    bcftools mpileup --threads ${task.cpus}\
+    $known_sites_mpile_cmd \
+    -Q ${params.min_base_quality}\
+    -f $reffol/${refid}.fasta $bam | \
+    bcftools call --threads ${task.cpus} \
+    $known_sites_call_cmd \
+    -O z -o ${name}.raw.vcf.gz
+  
+    bcftools filter -e 'QUAL < $params.min_snp_qual'  -Ou ${name}.raw.vcf.gz | bcftools query -f "%CHROM\t%POS\t%REF\t%ALT\t%DP4[\t%GT]\n"  |\
+    awk 'length(\$3) == 1 && length(\$4) == 1 {print \$0}'  > ${name}.snpvcf.bed
+      
+    python $workflow.projectDir/scripts/01.filter_bsseq_variants.py \
+    -i ${name}.snpvcf.bed -o ${name}.filtered.snpvcf.bed
+    """
+  }
+
+  
 }
+
+/*
+Using GATK haplotyper caller below to call SNPs
+Caution: Havent tested SNPs called with GATK yet.. ended with some errors
+
+*/
+
+if (params.snpcaller == "gatk"){
+  process ModifyBam {
+    tag "${name}"
+    label "env_medium"
+    storeDir "${params.outdir}/modified_bams"
+
+    input:
+    set val(name), file(bam), file(bam_index) from input_bams
+
+    output:
+    set val(name), file("${name}.modified.bam") into modify_bam
+
+    script:
+    """
+    picard AddOrReplaceReadGroups I=$bam \
+    O=${name}.modified.bam \
+    RGID=$name RGLB=$name \
+    RGPL=illumina RGPU=none RGSM=$name
+    """
+  }
+
+  process getBSVcf {
+    // Using GATK
+    tag "${name}"
+    label "env_medium"
+    publishDir "${params.outdir}/raw_variants", mode: "copy"
+
+    input:
+    set val(name), file(bam) from modify_bam
+
+    output:
+    file("${name}.filtered.snpvcf.bed") into bsseq_vcfbed
+
+    script:
+    known_sites_cmd = params.known_sites != false ? "--alleles ${params.known_sites} --force-call-filtered-alleles" : ''
+    known_sites_bcf = params.known_sites != false ? "-T ${params.known_sites}" : ''
+    // --alleles ${known_sites_vcf} --force-call-filtered-alleles \
+    """
+    samtools index $bam 
+
+    gatk --java-options '-Djava.io.tmpdir=${params.tmpdir}' HaplotypeCaller\
+    -R $reffol/${refid}.fasta\
+    -I $bam \
+    -O ${name}.vcf.gz \
+    $known_sites_cmd \
+    --output-mode EMIT_ALL_CONFIDENT_SITES
+
+    bcftools filter $known_sites_bcf ${name}.vcf.gz | bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%AD][\t%GT]\n" |\
+    awk 'length(\$3) == 1 && length(\$4) == 1 {print \$0}'  > ${name}.snpvcf.bed
+      
+    python $workflow.projectDir/scripts/01.filter_bsseq_variants.py \
+    -i ${name}.snpvcf.bed -o ${name}.filtered.snpvcf.bed
+    """
+  }
+}
+
 
 // process getBSVcf {
 //   tag "${name}"
