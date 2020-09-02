@@ -95,7 +95,7 @@ if (params.snpcaller == "bcftools"){
     set val(name), file(bam), file(bam_index) from input_bams
 
     output:
-    file("${name}.filtered.snpvcf.bed") into bsseq_vcfbed
+    file("${name}.filtered.vcf.gz") into bsseq_vcfbed
 
     script:
     outname = bam.baseName 
@@ -110,16 +110,16 @@ if (params.snpcaller == "bcftools"){
     bcftools call --threads ${task.cpus} \
     $known_sites_call_cmd \
     -O z -o ${name}.raw.vcf.gz
+
+    bcftools filter -e 'QUAL < $params.min_snp_qual' \
+    -Oz ${name}.raw.vcf.gz | \
+    bcftools view -V indels | \
+    bcftools filter -e ' REF == "G" && ALT == "A" ' |\
+    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.filtered.vcf.gz
   
-    bcftools filter -e 'QUAL < $params.min_snp_qual'  -Ou ${name}.raw.vcf.gz | bcftools query -f "%CHROM\t%POS\t%REF\t%ALT\t%DP4[\t%GT]\n"  |\
-    awk 'length(\$3) == 1 && length(\$4) == 1 {print \$0}'  > ${name}.snpvcf.bed
-      
-    python $workflow.projectDir/scripts/01.filter_bsseq_variants.py \
-    -i ${name}.snpvcf.bed -o ${name}.filtered.snpvcf.bed
     """
   }
 
-  
 }
 
 /*
@@ -133,7 +133,7 @@ if (params.snpcaller == "gatk"){
     tag "${name}"
     label "env_medium"
     storeDir "${params.outdir}/modified_bams"
-
+    
     input:
     set val(name), file(bam), file(bam_index) from input_bams
 
@@ -159,7 +159,7 @@ if (params.snpcaller == "gatk"){
     set val(name), file(bam) from modify_bam
 
     output:
-    file("${name}.filtered.snpvcf.bed") into bsseq_vcfbed
+    file("${name}.filtered.vcf.gz") into bsseq_vcfbed
 
     script:
     known_sites_cmd = params.known_sites != false ? "--alleles ${params.known_sites} --force-call-filtered-alleles" : ''
@@ -171,15 +171,15 @@ if (params.snpcaller == "gatk"){
     gatk --java-options '-Djava.io.tmpdir=${params.tmpdir}' HaplotypeCaller\
     -R $reffol/${refid}.fasta\
     -I $bam \
-    -O ${name}.vcf.gz \
+    -O ${name}.raw.vcf.gz \
     $known_sites_cmd \
     --output-mode EMIT_ALL_CONFIDENT_SITES
 
-    bcftools filter $known_sites_bcf ${name}.vcf.gz | bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%AD][\t%GT]\n" |\
-    awk 'length(\$3) == 1 && length(\$4) == 1 {print \$0}'  > ${name}.snpvcf.bed
-      
-    python $workflow.projectDir/scripts/01.filter_bsseq_variants.py \
-    -i ${name}.snpvcf.bed -o ${name}.filtered.snpvcf.bed
+    bcftools filter -e 'QUAL < $params.min_snp_qual' \
+    -Oz ${name}.raw.vcf.gz | \
+    bcftools view -V indels | \
+    bcftools filter -e ' REF == "G" && ALT == "A" ' |\
+    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.filtered.vcf.gz
     """
   }
 }
