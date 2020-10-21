@@ -27,6 +27,31 @@ Make sure there is no hash tag in the file name. GATK 4 (GenomicsDBImport) isnt 
 params.known_sites = false  // Known sites (VCF file) DB
 // Store the chromosomes in a channel for easier workload scattering on large cohort
 chromosomes = ["Chr1", "Chr2", "Chr3", "Chr4", "Chr5"]
+// Store the chromosomes in a channel for easier workload scattering on large cohort
+// ref_file = Channel.fromPath( params.fasta )
+// process getChromosomes {
+//   label 'env_small'
+
+//   input:
+//   file(fasta) from ref_file
+
+//   output:
+//   stdout chrnames_fasta
+
+//   script:
+//   """
+//   grep "^>" $fasta | sed 's/^>//' 
+//   """
+// }
+// chrnames_fasta
+//     .splitCsv()
+//     .map {row -> "${row[0]}"}
+//     .into{ chromosomes_ch; chromnames_ch }
+
+
+// chromosomes_ch --> genomics dbi
+// chromnames_ch --> gathervcf
+
 
 params.project = "the1001genomes"
 params.outdir = './snpcall'
@@ -115,6 +140,7 @@ summary['Run Name']       = custom_runName ?: workflow.runName
 summary['Reads']          = params.reads
 summary['Data Type']      = params.singleEnd ? 'Single-End' : 'Paired-End'
 summary['Genome']         = params.fasta
+summary['Input file type'] = "$params.file_ext: you could also give 'aligned_bam', 'fastq' or 'bam'"
 if(params.notrim)       summary['Trimming Step'] = 'Skipped'
 summary['Save Trimmed']   = params.saveTrimmed ? 'Yes' : 'No'
 summary['Max Memory']     = params.max_memory
@@ -170,6 +196,8 @@ if (build_index == true){
 */
 if (params.file_ext == "fastq"){
   read_files_processing.into { read_files_fastqc; read_files_trimming }
+} else if (params.file_ext == 'aligned_bam') {
+  read_files_processing.set{ sorted_bam }
 } else {
 
   process extractFastq {
@@ -216,122 +244,134 @@ if (params.file_ext == "fastq"){
 /*
 * 3. FastQC for the input files
 */
-process fastqc {
-    tag "$name"
-    label 'env_small'
-    publishDir "${params.outdir}/qc/fastqc", mode: 'copy',
-        saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
+if (params.file_ext != 'aligned_bam') {
+  process fastqc {
+      tag "$name"
+      label 'env_small'
+      publishDir "${params.outdir}/qc/fastqc", mode: 'copy',
+          saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
 
-    input:
-    set val(name), file(reads) from read_files_fastqc
+      input:
+      set val(name), file(reads) from read_files_fastqc
 
-    output:
-    file '*_fastqc.{zip,html}' into ch_fastqc_results_for_multiqc
+      output:
+      file '*_fastqc.{zip,html}' into ch_fastqc_results_for_multiqc
 
-    script:
-    """
-    fastqc -q $reads
-    """
+      script:
+      """
+      fastqc -q $reads
+      """
+  }
+} else {
+  ch_fastqc_results_for_multiqc = Channel.create()
 }
+
 
 /*
 * 4. Trimming the reads
 */
-if(params.notrim){
-    read_files_trimming.set{ trimmed_reads }
-    ch_trimgalore_fastqc_reports_for_multiqc = Channel.create()
+if (params.file_ext != 'aligned_bam') {
+  if(params.notrim){
+      read_files_trimming.set{ trimmed_reads }
+      ch_trimgalore_fastqc_reports_for_multiqc = Channel.create()
+  } else {
+      process trimReads {
+          tag "$name"
+          label 'env_medium'
+          publishDir "${params.outdir}/qc/trim_galore", mode: 'copy',
+              saveAs: {filename ->
+                  if (filename.indexOf("_fastqc") > 0) "FastQC/$filename"
+                  else if (filename.indexOf("trimming_report.txt") > 0) "logs/$filename"
+                  else params.saveTrimmed ? filename : null
+              }
+
+          input:
+          set val(name), file(reads) from read_files_trimming
+
+          output:
+          set val(name), file('*fq.gz') into trimmed_reads
+          file "*trimming_report.txt" into trimgalore_results
+          file "*_fastqc.{zip,html}" into ch_trimgalore_fastqc_reports_for_multiqc
+
+          script:
+          c_r1 = params.clip_r1 > 0 ? "--clip_r1 ${params.clip_r1}" : ''
+          c_r2 = params.clip_r2 > 0 ? "--clip_r2 ${params.clip_r2}" : ''
+          tpc_r1 = params.three_prime_clip_r1 > 0 ? "--three_prime_clip_r1 ${params.three_prime_clip_r1}" : ''
+          tpc_r2 = params.three_prime_clip_r2 > 0 ? "--three_prime_clip_r2 ${params.three_prime_clip_r2}" : ''
+          illumina = params.illumina ? "--illumina" : ''
+          if (params.singleEnd) {
+              """
+              trim_galore --fastqc --gzip $illumina  $c_r1 $tpc_r1 $reads
+              """
+          } else {
+              """
+              trim_galore --paired --fastqc --gzip $illumina $c_r1 $c_r2 $tpc_r1 $tpc_r2 $reads
+              """
+          }
+      }
+  }
 } else {
-    process trimReads {
-        tag "$name"
-        label 'env_medium'
-        publishDir "${params.outdir}/qc/trim_galore", mode: 'copy',
-            saveAs: {filename ->
-                if (filename.indexOf("_fastqc") > 0) "FastQC/$filename"
-                else if (filename.indexOf("trimming_report.txt") > 0) "logs/$filename"
-                else params.saveTrimmed ? filename : null
-            }
-
-        input:
-        set val(name), file(reads) from read_files_trimming
-
-        output:
-        set val(name), file('*fq.gz') into trimmed_reads
-        file "*trimming_report.txt" into trimgalore_results
-        file "*_fastqc.{zip,html}" into ch_trimgalore_fastqc_reports_for_multiqc
-
-        script:
-        c_r1 = params.clip_r1 > 0 ? "--clip_r1 ${params.clip_r1}" : ''
-        c_r2 = params.clip_r2 > 0 ? "--clip_r2 ${params.clip_r2}" : ''
-        tpc_r1 = params.three_prime_clip_r1 > 0 ? "--three_prime_clip_r1 ${params.three_prime_clip_r1}" : ''
-        tpc_r2 = params.three_prime_clip_r2 > 0 ? "--three_prime_clip_r2 ${params.three_prime_clip_r2}" : ''
-        illumina = params.illumina ? "--illumina" : ''
-        if (params.singleEnd) {
-            """
-            trim_galore --fastqc --gzip $illumina  $c_r1 $tpc_r1 $reads
-            """
-        } else {
-            """
-            trim_galore --paired --fastqc --gzip $illumina $c_r1 $c_r2 $tpc_r1 $tpc_r2 $reads
-            """
-        }
-    }
+  ch_trimgalore_fastqc_reports_for_multiqc = Channel.create()
 }
-
 
 /*
 * 5. Aligning the reads -- BWA-MEM
 */
-process alignReads {
-  tag "$name"
-  label 'env_large'
+if (params.file_ext != 'aligned_bam') {
+  process alignReads {
+    tag "$name"
+    label 'env_large'
 
-  input:
-  set val(name), file(reads) from trimmed_reads
-  file genome
-  file indices from bwa_index.collect()
-  file fa_dict from fasta_dict.collect()
+    input:
+    set val(name), file(reads) from trimmed_reads
+    file genome
+    file indices from bwa_index.collect()
+    file fa_dict from fasta_dict.collect()
 
-  output:
-  set val(name), file("${name}.sam") into aligned_sam
+    output:
+    set val(name), file("${name}.sam") into aligned_sam
 
-  script:
-  """
-  bwa mem -t ${task.cpus} $genome $reads > ${name}.sam
-  """
-}
-
-/*
-* 6. Processing sam to bam and sorting the bam
-*/
-process processBam {
-  tag "$name"
-  label 'env_medium'
-  publishDir "${params.outdir}/qc/alignstats_samtools/", mode: 'copy',
-  saveAs: {filename ->
-    if (filename.indexOf(".txt") > 0) "$filename"
-    else null
+    script:
+    """
+    bwa mem -t ${task.cpus} $genome $reads > ${name}.sam
+    """
   }
 
+  /*
+  * 6. Processing sam to bam and sorting the bam
+  */
+  process processBam {
+    tag "$name"
+    label 'env_medium'
+    publishDir "${params.outdir}/qc/alignstats_samtools/", mode: 'copy',
+    saveAs: {filename ->
+      if (filename.indexOf(".txt") > 0) "$filename"
+      else null
+    }
 
-  input:
-  set val(name), file(sam) from aligned_sam
 
-  output:
-  set val(name), file("${name}.sorted.bam") into sorted_bam
-  file "${name}_flagstat_report.txt" into ch_flagstat_results_for_multiqc
-  file "${name}_stats_report.txt" into ch_samtools_stats_results_for_multiqc
+    input:
+    set val(name), file(sam) from aligned_sam
 
-  script:
-  """
-  samtools view -b -o ${name}.bam -S $sam
-  samtools sort -m 5G --threads ${task.cpus} -o ${name}.sorted.bam ${name}.bam
+    output:
+    set val(name), file("${name}.sorted.bam") into sorted_bam
+    file "${name}_flagstat_report.txt" into ch_flagstat_results_for_multiqc
+    file "${name}_stats_report.txt" into ch_samtools_stats_results_for_multiqc
 
-  samtools index ${name}.sorted.bam
-  samtools flagstat ${name}.sorted.bam > ${name}_flagstat_report.txt
-  samtools stats ${name}.sorted.bam > ${name}_stats_report.txt
-  """
+    script:
+    """
+    samtools view -b -o ${name}.bam -S $sam
+    samtools sort -m 5G --threads ${task.cpus} -o ${name}.sorted.bam ${name}.bam
+
+    samtools index ${name}.sorted.bam
+    samtools flagstat ${name}.sorted.bam > ${name}_flagstat_report.txt
+    samtools stats ${name}.sorted.bam > ${name}_stats_report.txt
+    """
+  }
+} else {
+  ch_flagstat_results_for_multiqc = Channel.create()
+  ch_samtools_stats_results_for_multiqc = Channel.create()
 }
-
 /*
 * 7. Picard tool on bam file to remove duplicates
 */
@@ -670,7 +710,6 @@ ch_config_for_multiqc = Channel
 //   multiqc --version &> v_multiqc.txt
 //   """
 // }
-
 process multiQC {
     label 'env_medium'
     tag "${params.outdir}/MultiQC/$ofilename"
