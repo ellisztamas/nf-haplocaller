@@ -250,7 +250,7 @@ if (params.cohort != false) {
   }
   if (params.filter_maf) {
     process filterMAF {
-      lable "env_medium"
+      label "env_medium"
       publishDir "${params.outdir}/", mode: "copy"
 
       input:
