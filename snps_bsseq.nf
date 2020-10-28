@@ -8,6 +8,16 @@ params.project = "the1001genomes"
 params.input = false
 params.outdir = './snpcall'
 params.fasta = false
+params.cohort = false // file name for output combined vcf
+
+/* Below are additional filtering steps, only work on cohort analysis
+1. filter sites based on minor allele frequency (maf)
+2. missing fraction of missing calls
+*/
+params.filter_maf = false
+params.min_maf = 0.2  //
+params.max_na = 0.3 //
+
 params.snpcaller = "bcftools"
 params.min_base_quality = 30 // only used for snpcaller bcftools
 params.min_snp_qual = 30
@@ -95,7 +105,8 @@ if (params.snpcaller == "bcftools"){
     set val(name), file(bam), file(bam_index) from input_bams
 
     output:
-    file("${name}.filtered.vcf.gz") into bsseq_vcfbed
+    file("${name}.snp.vcf.gz*") into bsseq_snps
+    file("${name}.qual_filtered.vcf.gz*") into bsseq_qual_snps 
 
     script:
     outname = bam.baseName 
@@ -113,9 +124,12 @@ if (params.snpcaller == "bcftools"){
 
     bcftools filter -e 'QUAL < $params.min_snp_qual' \
     -Oz ${name}.raw.vcf.gz | \
-    bcftools view -V indels | \
-    bcftools filter -e ' REF == "G" && ALT == "A" ' |\
-    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.filtered.vcf.gz
+    bcftools view -V indels > ${name}.snps.vcf
+    bgzip ${name}.snps.vcf && tabix ${name}.snps.vcf.gz
+    
+    bcftools filter -e ' REF == "G" && ALT == "A" ' ${name}.snps.vcf |\
+    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.qual_filtered.vcf
+    bgzip ${name}.qual_filtered.vcf && tabix ${name}.qual_filtered.vcf.gz
   
     """
   }
@@ -159,7 +173,7 @@ if (params.snpcaller == "gatk"){
     set val(name), file(bam) from modify_bam
 
     output:
-    file("${name}.filtered.vcf.gz") into bsseq_vcfbed
+    file("${name}.qual_filtered.vcf.gz*") into bsseq_vcfbed
 
     script:
     known_sites_cmd = params.known_sites != false ? "--alleles ${params.known_sites} --force-call-filtered-alleles" : ''
@@ -179,7 +193,9 @@ if (params.snpcaller == "gatk"){
     -Oz ${name}.raw.vcf.gz | \
     bcftools view -V indels | \
     bcftools filter -e ' REF == "G" && ALT == "A" ' |\
-    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.filtered.vcf.gz
+    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.qual_filtered.vcf
+
+    bgzip ${name}.qual_filtered.vcf && tabix ${name}.qual_filtered.vcf.gz
     """
   }
 }
@@ -215,4 +231,40 @@ if (params.snpcaller == "gatk"){
 //   """
 // }
 
-    
+if (params.cohort != false) {
+
+  process mergeVCF {
+    label "env_medium"
+    publishDir "${params.outdir}/", mode: "copy"
+
+    input:
+    file(vcf) from bsseq_qual_snps.collect()
+
+    output:
+    file("${params.cohort}.qual_filtered.vcf.gz") into mergedVCF
+
+    script:
+    """
+    bcftools merge *.vcf.gz -Oz -o ${params.cohort}.qual_filtered.vcf.gz
+    """
+  }
+  if (params.filter_maf) {
+    process filterMAF {
+      lable "env_medium"
+      publishDir "${params.outdir}/", mode: "copy"
+
+      input:
+      file(vcf) from mergedVCF
+
+      output:
+      file("${params.cohort}.maf_filtered.vcf.gz*") into filter_maf_vcf
+
+      script:
+      """
+      bcftools view -i 'F_MISSING <= $params.max_na && MAF>=$params.min_maf' $vcf > ${params.cohort}.maf_filtered.vcf
+      bgzip ${params.cohort}.maf_filtered.vcf && tabix ${params.cohort}.maf_filtered.vcf.gz 
+      """
+    }
+  }
+  
+} 
