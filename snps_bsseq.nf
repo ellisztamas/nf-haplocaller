@@ -105,7 +105,7 @@ if (params.snpcaller == "bcftools"){
     set val(name), file(bam), file(bam_index) from input_bams
 
     output:
-    file("${name}.snp.vcf.gz*") into bsseq_snps
+    file("${name}.snps.vcf.gz*") into bsseq_snps
     file("${name}.qual_filtered.vcf.gz*") into bsseq_qual_snps 
 
     script:
@@ -127,7 +127,7 @@ if (params.snpcaller == "bcftools"){
     bcftools view -V indels > ${name}.snps.vcf
     bgzip ${name}.snps.vcf && tabix ${name}.snps.vcf.gz
     
-    bcftools filter -e ' REF == "G" && ALT == "A" ' ${name}.snps.vcf |\
+    bcftools filter -e ' REF == "G" && ALT == "A" ' ${name}.snps.vcf.gz |\
     bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.qual_filtered.vcf
     bgzip ${name}.qual_filtered.vcf && tabix ${name}.qual_filtered.vcf.gz
   
