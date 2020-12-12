@@ -59,14 +59,15 @@ req_label = params.cohort != false ? 'env_large' : 'env_medium_mem'
 process getVcf {
   tag "${name}"
   label "${req_label}"
-  publishDir "${params.outdir}/raw_variants", mode: "copy",
-    saveAs: { filename -> params.save_intermediate ? filename : null }
+  publishDir "${params.outdir}/variants", mode: "copy"
+    // saveAs: { filename -> params.save_intermediate ? filename : null }
 
   input:
   set val(name), file(bam), file(bam_index) from ch_input_bam
 
   output:
-  set val(name), file("${name}.vcf.gz") into ch_raw_vcf
+  set val(name), file("${name}.vcf.gz") into ch_filter_vcf
+  set val(name), file("${name}.vcf.gz.tbi") into ch_filter_vcf_tbi
 
   script:
   known_sites_mpile_cmd = params.known_sites != false ? "-T ${known_sites_tsv}" : ''
@@ -79,29 +80,13 @@ process getVcf {
   -f $reffol/${refid}.fasta $bam | \
   bcftools call --threads ${task.cpus} \
   $call_varonly $known_sites_call_cmd \
-  -O z -o ${name}.vcf.gz
+  -O z -o ${name}.raw.vcf.gz
+
+  bcftools filter -e 'QUAL < $params.min_snp_qual' -O z -o ${name}.vcf.gz ${name}.raw.vcf.gz
+  tabix ${name}.vcf.gz
   """
 }
 
-process filterVcf {
-  tag "${name}"
-  label 'env_medium'
-  publishDir "${params.outdir}/filtered_variants", mode: "copy"
-
-  input:
-  set val(name), file(vcf) from ch_raw_vcf
-
-  output:
-  set val(name), file("${name}.filtered.vcf.gz") into ch_filter_vcf
-  set val(name), file("${name}.filtered.vcf.gz.tbi") into ch_filter_vcf_tbi
-
-  script:
-  // qual_filter = $params.min_snp_qual > 0 ? "  "
-  """
-  bcftools filter -e 'QUAL < $params.min_snp_qual' -O z -o ${name}.filtered.vcf.gz ${name}.vcf.gz
-  tabix ${name}.filtered.vcf.gz
-  """
-}
 
 if (params.cohort != false) {
 
