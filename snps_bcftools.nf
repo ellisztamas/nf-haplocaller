@@ -49,35 +49,28 @@ if (params.known_sites != false){
   //     tabix -s1 -b2 -e2 ${out_name}.tsv.gz
 }
 
-if (params.cohort != false) {
-  input_bams = Channel.fromPath( "${params.input}" )
-  input_bam_idx = Channel.fromPath( "${params.input}" ).map{ it -> file("${it}.bai")  }.collect()
-  input_bams = input_bams.collect()
-} else {
-  input_bams = Channel.fromPath( "${params.input}" )
-  input_bam_idx = Channel.fromPath( "${params.input}" ).map{ it -> file("${it}.bai")  }
-}
+ch_input_bam = Channel
+        .fromPath( params.input )
+        .map{ it -> [file(it).baseName, file(it), file("${it}.bai") ] }
 
 call_varonly = params.variants_only != false ? '-v' : ' '
 req_label = params.cohort != false ? 'env_large' : 'env_medium_mem'
 
 process getVcf {
-  tag "${outname}"
+  tag "${name}"
   label "${req_label}"
   publishDir "${params.outdir}/raw_variants", mode: "copy",
     saveAs: { filename -> params.save_intermediate ? filename : null }
 
   input:
-  file(bam) from input_bams
-  file(bam_index) from input_bam_idx
+  set val(name), file(bam), file(bam_index) from ch_input_bam
 
   output:
-  set val("${outname}"), file("${outname}.vcf.gz") into nofilter_vcf
+  set val(name), file("${name}.vcf.gz") into ch_raw_vcf
 
   script:
   known_sites_mpile_cmd = params.known_sites != false ? "-T ${known_sites_tsv}" : ''
   known_sites_call_cmd = params.known_sites != false ? "-C alleles -m -T ${known_sites_tsv}" : ''
-  outname = params.cohort != false ? "${params.cohort}" : file(bam).baseName
   // -q ${params.min_map_quality}\
   """
   bcftools mpileup --threads ${task.cpus}\
@@ -86,27 +79,49 @@ process getVcf {
   -f $reffol/${refid}.fasta $bam | \
   bcftools call --threads ${task.cpus} \
   $call_varonly $known_sites_call_cmd \
-  -O z -o ${outname}.vcf.gz
+  -O z -o ${name}.vcf.gz
   """
 }
 
 process filterVcf {
   tag "${name}"
   label 'env_medium'
-  publishDir "${params.outdir}/filtered", mode: "copy"
+  publishDir "${params.outdir}/filtered_variants", mode: "copy"
 
   input:
-  set val(name), file(vcf) from nofilter_vcf
+  set val(name), file(vcf) from ch_raw_vcf
 
   output:
-  set val(name), file("${name}.filtered.vcf.gz"), file("${name}.filtered.vcf.gz.tbi") into output_vcf
+  set val(name), file("${name}.filtered.vcf.gz") into ch_filter_vcf
+  set val(name), file("${name}.filtered.vcf.gz.tbi") into ch_filter_vcf_tbi
 
   script:
   // qual_filter = $params.min_snp_qual > 0 ? "  "
   """
-  bcftools filter -e 'QUAL < $params.min_snp_qual' -O z -o ${name}.filtered.vcf.gz $vcf
+  bcftools filter -e 'QUAL < $params.min_snp_qual' -O z -o ${name}.filtered.vcf.gz ${name}.vcf.gz
   tabix ${name}.filtered.vcf.gz
   """
+}
+
+if (params.cohort != false) {
+
+  process mergeVCF {
+    label "env_medium"
+    publishDir "${params.outdir}/", mode: "copy"
+
+    input:
+    file(vcf) from ch_filter_vcf.collect()
+    file(vcf_idx) from ch_filter_vcf_tbi.collect()
+
+    output:
+    file("${params.cohort}.merged.filtered.vcf.gz*") into mergedVCF
+
+    script:
+    """
+    bcftools merge *.vcf.gz -Oz -o ${params.cohort}.merged.filtered.vcf.gz
+    tabix ${params.cohort}.merged.filtered.vcf.gz
+    """
+  }
 }
 
 if (params.get_bed != false ){
