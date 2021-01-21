@@ -9,6 +9,7 @@ params.input = false
 params.outdir = './snpcall'
 params.fasta = false
 params.cohort = false // file name for output combined vcf
+params.sort_bam = false
 
 /* Below are additional filtering steps, only work on cohort analysis
 1. filter sites based on minor allele frequency (maf)
@@ -42,11 +43,40 @@ if ( params.fasta ){
 
 
 //  SNP calling starts now
-input_bams = Channel
+
+
+if (params.sort_bam){
+  input_raw_bams = Channel
         .fromPath( "${params.input}" )
-        .map{ it -> [ file(it).baseName, file(it), file("${it}.bai") ] }
+        .map{ it -> [ file(it).baseName, file(it) ] }
 
+  process sortBam {
+    tag "${name}"
+    label "env_medium"
 
+    input:
+    set val(name), file(bam) from input_raw_bams
+
+    output:
+    set val(name), file("${name}.sorted.mkdup.bam"), file("${name}.sorted.mkdup.bam.bai") into input_bams
+
+    script:
+    sample_id = name.replaceAll( "_1_val_1_bismark_bt2_pe.deduplicated", "")
+    def avail_mem = task.memory ? ((task.memory.toGiga() - 6) / task.cpus).trunc() : false
+    def sort_mem = avail_mem && avail_mem > 2 ? "-m ${avail_mem}G" : ''
+    """
+    samtools sort $sort_mem --threads ${task.cpus} -o ${name}.sorted.bam ${name}.bam
+    picard AddOrReplaceReadGroups\
+    I=${name}.sorted.bam  O=${name}.sorted.mkdup.bam\
+    ID=$sample_id LB=$sample_id PL=illumina PU=none SM=$sample_id
+    samtools index ${name}.sorted.mkdup.bam
+    """
+  }
+} else {
+  input_bams = Channel
+        .fromPath( "${params.input}" )
+        .map{ it -> [ file(it).baseName, file(it), "${file(it)}.bai" ] }
+}
 
 // process MethylExtract {
 //   tag "${name}"
