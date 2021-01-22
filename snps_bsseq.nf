@@ -9,7 +9,6 @@ params.input = false
 params.outdir = './snpcall'
 params.fasta = false
 params.cohort = false // file name for output combined vcf
-params.sort_bam = false
 
 /* Below are additional filtering steps, only work on cohort analysis
 1. filter sites based on minor allele frequency (maf)
@@ -20,6 +19,8 @@ params.min_maf = 0.2  //
 params.max_na = 0.3 //
 
 params.snpcaller = "bcftools"
+// You could also give gatk, bcftools
+
 params.min_base_quality = 30 // only used for snpcaller bcftools
 params.min_snp_qual = 30
 // to perform snpcalling only on specific position, provide a targets file
@@ -42,83 +43,52 @@ if ( params.fasta ){
 }
 
 
-//  SNP calling starts now
+ch_input_raw_bams = Channel
+      .fromPath( "${params.input}" )
+      .map{ it -> [ file(it).baseName, file(it) ] }
+/*
+//  SNP calling after modifying the bam file
 
+Please cite: 
+Adam Nunn et. al. 2021
+https://www.biorxiv.org/content/10.1101/2021.01.11.425926v1.full.pdf
 
-if (params.sort_bam){
-  input_raw_bams = Channel
-        .fromPath( "${params.input}" )
-        .map{ it -> [ file(it).baseName, file(it) ] }
+*/
 
-  process sortBam {
-    tag "${name}"
-    label "env_medium"
+process modifyBam {
+  tag "${name}"
+  label "env_medium"
 
-    input:
-    set val(name), file(bam) from input_raw_bams
+  input:
+  set val(name), file(bam) from ch_input_raw_bams
 
-    output:
-    set val(name), file("${name}.sorted.mkdup.bam"), file("${name}.sorted.mkdup.bam.bai") into input_bams
+  output:
+  set val(sample_id), file("${sample_id}.bsmod.bam") into ch_modify_bam
+  set val(sample_id), file("${sample_id}.bsmod.bam.bai") into ch_modify_bam_index
 
-    script:
-    sample_id = name.replaceAll( "_1_val_1_bismark_bt2_pe.deduplicated", "")
-    def avail_mem = task.memory ? ((task.memory.toGiga() - 6) / task.cpus).trunc() : false
-    def sort_mem = avail_mem && avail_mem > 2 ? "-m ${avail_mem}G" : ''
-    """
-    samtools sort $sort_mem --threads ${task.cpus} -o ${name}.sorted.bam ${name}.bam
-    picard AddOrReplaceReadGroups\
-    I=${name}.sorted.bam  O=${name}.sorted.mkdup.bam\
-    ID=$sample_id LB=$sample_id PL=illumina PU=none SM=$sample_id
-    samtools index ${name}.sorted.mkdup.bam
-    """
-  }
-} else {
-  input_bams = Channel
-        .fromPath( "${params.input}" )
-        .map{ it -> [ file(it).baseName, file(it), "${file(it)}.bai" ] }
+  script:
+  sample_id = name.replaceAll( "_1_val_1_bismark_bt2_pe.deduplicated", "")
+  sample_id = sample_id.replaceAll("_1.sorted.markDups", "")
+  def avail_mem = task.memory ? ((task.memory.toGiga() - 6) / task.cpus).trunc() : false
+  def sort_mem = avail_mem && avail_mem > 2 ? "-m ${avail_mem}G" : ''
+  """
+  samtools sort $sort_mem --threads ${task.cpus} -o ${sample_id}.sorted.bam $bam
+
+  samtools calmd -b ${sample_id}.sorted.bam $reffol/${refid}.fasta 1> ${sample_id}_calmd.bam 2> samtools.log.err
+  samtools index ${sample_id}_calmd.bam
+
+  python $workflow.projectDir/scripts/epidiverse_change_sam_queries.py \
+    -f $reffol/${refid}.fasta -T ${task.cpus} -Q \
+    -t ${workflow.workDir}/ \
+    ${sample_id}_calmd.bam  ${sample_id}.raw.bsmod.bam
+
+  picard AddOrReplaceReadGroups\
+  I=${sample_id}.raw.bsmod.bam O=${sample_id}.bsmod.bam\
+  ID=$sample_id LB=$sample_id PL=illumina PU=none SM=$sample_id
+
+  samtools index ${sample_id}.bsmod.bam
+  """
 }
-
-// process MethylExtract {
-//   tag "${name}"
-//   label "env_medium"
-//   publishDir "${params.outdir}/raw_variants", mode: "copy"
-
-//   input:
-//   set val(name), file(bam) from modify_bam
-
-//   output:
-//   file("${name}.filtered.snpvcf.bed") into bsseq_vcfbed
-
-//   script:
-//   outname = bam.baseName 
-//   // flagW=99,147 flagC=83,163 // set for paired end
-//   """
-//   mkdir out_dir
-//   ln -s -r $bam out_dir/$bam
-
-//   MethylExtract.pl seq=~/TAiR10_ARABIDOPSIS/TAIR10_wholeGenome.fasta \
-//   inDir=./ outDir=out_dir \
-//   flagW=99,147 flagC=83,163 \  
-//   varFraction=0.05 maxPval=0.01 \
-//   LastIgnor=3 minDepthSNV=2 \
-
-  
-//   bcftools mpileup --threads ${task.cpus}\
-//   $known_sites_mpile_cmd \
-//   -Q ${params.min_base_quality}\
-//   -f $reffol/${refid}.fasta $bam | \
-//   bcftools call --threads ${task.cpus} \
-//   $call_varonly $known_sites_call_cmd \
-//   -O z -o ${outname}.vcf.gz
-  
-//   bcftools filter -T $known_sites_targets ${name}.vcf.gz | bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%AD][\t%GT]\n" |\
-//   awk 'length(\$3) == 1 && length(\$4) == 1 {print \$0}'  > ${name}.snpvcf.bed
-    
-//   python $workflow.projectDir/scripts/01.filter_bsseq_variants.py \
-//   -i ${name}.snpvcf.bed -o ${name}.filtered.snpvcf.bed
-//   """
-// }
-
 
 /*
 Using BCFtools to call genotypes at known sites
@@ -132,11 +102,11 @@ if (params.snpcaller == "bcftools"){
     publishDir "${params.outdir}/variants_bcftools", mode: "copy"
 
     input:
-    set val(name), file(bam), file(bam_index) from input_bams
+    set val(name), file(bam) from ch_modify_bam
+    set val(name), file(bam_index) from ch_modify_bam_index
 
     output:
-    file("${name}.snps.vcf.gz*") into bsseq_snps
-    file("${name}.qual_filtered.vcf.gz*") into bsseq_qual_snps 
+    file("${name}.snps.vcf.gz*") into ch_bsseq_snps
 
     script:
     outname = bam.baseName 
@@ -157,61 +127,36 @@ if (params.snpcaller == "bcftools"){
     bcftools view -V indels > ${name}.snps.vcf
     bgzip ${name}.snps.vcf && tabix ${name}.snps.vcf.gz
     
-    bcftools filter -e ' REF == "G" && ALT == "A" ' ${name}.snps.vcf.gz |\
-    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.qual_filtered.vcf
-    bgzip ${name}.qual_filtered.vcf && tabix ${name}.qual_filtered.vcf.gz
-  
     """
+    // bcftools filter -e ' REF == "G" && ALT == "A" ' ${name}.snps.vcf.gz |\
+    // bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.qual_filtered.vcf
+    // bgzip ${name}.qual_filtered.vcf && tabix ${name}.qual_filtered.vcf.gz
   }
 
 }
 
 /*
 Using GATK haplotyper caller below to call SNPs
-Caution: Havent tested SNPs called with GATK yet.. ended with some errors
-
 */
 
 if (params.snpcaller == "gatk"){
-  process ModifyBam {
-    tag "${name}"
-    label "env_medium"
-    storeDir "${params.outdir}/modified_bams"
-    
-    input:
-    set val(name), file(bam), file(bam_index) from input_bams
-
-    output:
-    set val(name), file("${name}.modified.bam") into modify_bam
-
-    script:
-    """
-    picard AddOrReplaceReadGroups I=$bam \
-    O=${name}.modified.bam \
-    RGID=$name RGLB=$name \
-    RGPL=illumina RGPU=none RGSM=$name
-    """
-  }
-
-  process getBSVcf {
+  
+  process gatkCaller {
     // Using GATK
     tag "${name}"
     label "env_medium"
-    publishDir "${params.outdir}/raw_variants", mode: "copy"
+    publishDir "${params.outdir}/variants", mode: "copy"
 
     input:
-    set val(name), file(bam) from modify_bam
+    set val(name), file(bam) from ch_modify_bam
+    set val(name), file(bam_idx) from ch_modify_bam_index
 
     output:
-    file("${name}.qual_filtered.vcf.gz*") into bsseq_vcfbed
+    file("${name}.vcf.gz*") into ch_bsseq_snps
 
     script:
     known_sites_cmd = params.known_sites != false ? "--alleles ${params.known_sites} --force-call-filtered-alleles" : ''
-    known_sites_bcf = params.known_sites != false ? "-T ${params.known_sites}" : ''
-    // --alleles ${known_sites_vcf} --force-call-filtered-alleles \
     """
-    samtools index $bam 
-
     gatk --java-options '-Djava.io.tmpdir=${params.tmpdir}' HaplotypeCaller\
     -R $reffol/${refid}.fasta\
     -I $bam \
@@ -219,13 +164,10 @@ if (params.snpcaller == "gatk"){
     $known_sites_cmd \
     --output-mode EMIT_ALL_CONFIDENT_SITES
 
-    bcftools filter -e 'QUAL < $params.min_snp_qual' \
-    -Oz ${name}.raw.vcf.gz | \
-    bcftools view -V indels | \
-    bcftools filter -e ' REF == "G" && ALT == "A" ' |\
-    bcftools filter -e ' REF == "C" && ALT == "T" ' > ${name}.qual_filtered.vcf
+    bcftools filter -e 'FILTER == "LowQual"' -O z ${name}.raw.vcf.gz |\
+    bcftools view -V indels > ${name}.vcf.gz
 
-    bgzip ${name}.qual_filtered.vcf && tabix ${name}.qual_filtered.vcf.gz
+    tabix ${name}.vcf.gz
     """
   }
 }
@@ -268,7 +210,7 @@ if (params.cohort != false) {
     publishDir "${params.outdir}/", mode: "copy"
 
     input:
-    file(vcf) from bsseq_qual_snps.collect()
+    file(vcf) from ch_bsseq_snps.collect()
 
     output:
     file("${params.cohort}.qual_filtered.vcf.gz") into mergedVCF
