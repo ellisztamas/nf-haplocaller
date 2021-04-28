@@ -165,9 +165,8 @@ if (params.snpcaller == "gatk"){
     --output-mode EMIT_ALL_CONFIDENT_SITES
 
     bcftools filter -e 'FILTER == "LowQual"' -O z ${name}.raw.vcf.gz |\
-    bcftools view -V indels > ${name}.vcf.gz
-
-    tabix ${name}.vcf.gz
+    bcftools view -V indels > ${name}.vcf
+    bgzip ${name}.vcf && tabix ${name}.vcf.gz
     """
   }
 }
