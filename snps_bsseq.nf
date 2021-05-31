@@ -9,6 +9,9 @@ params.input = false
 params.outdir = './snpcall'
 params.fasta = false
 params.cohort = false // file name for output combined vcf
+// add additional information in the VCF file. check 
+// http://samtools.github.io/bcftools/bcftools.html#mpileup
+params.annotate = "FORMAT/DP"
 
 /* Below are additional filtering steps, only work on cohort analysis
 1. filter sites based on minor allele frequency (maf)
@@ -56,7 +59,8 @@ https://www.biorxiv.org/content/10.1101/2021.01.11.425926v1.full.pdf
 */
 
 process modifyBam {
-  tag "${name}"
+  tag "${sample_id}"
+  storeDir "${workflow.workDir}/modifiedBam"
   label "env_medium"
 
   input:
@@ -112,10 +116,11 @@ if (params.snpcaller == "bcftools"){
     outname = bam.baseName 
     // flagW=99,147 flagC=83,163 // set for paired end
     known_sites_mpile_cmd = params.known_sites != false ? "-T ${params.known_sites}" : ''
-    known_sites_call_cmd = params.known_sites != false ? "-C alleles -m -T ${params.known_sites}" : ''
+    known_sites_call_cmd = params.known_sites != false ? "-C alleles -m -T ${params.known_sites}" : '-m'
     """
     bcftools mpileup --threads ${task.cpus}\
     $known_sites_mpile_cmd \
+    -a $params.annotate \
     -Q ${params.min_base_quality}\
     -f $reffol/${refid}.fasta $bam | \
     bcftools call --threads ${task.cpus} \
@@ -205,7 +210,7 @@ if (params.snpcaller == "gatk"){
 if (params.cohort != false) {
 
   process mergeVCF {
-    label "env_medium"
+    label "env_large"
     publishDir "${params.outdir}/", mode: "copy"
 
     input:
